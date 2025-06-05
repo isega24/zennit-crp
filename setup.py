@@ -53,7 +53,12 @@ setup(
         'torch>=1.7.0, <2.0.0',
         'numpy<=1.23.5',
         'tqdm',
-        'matplotlib'
+        'matplotlib',
+        'filelock',
+        'pyyaml',
+        'oauthlib',
+        'protobuf',
+        'tensorboard',
     ],
     extras_require = {
         'fast_img': ['Pillow-SIMD']
