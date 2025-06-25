@@ -19,7 +19,7 @@ from tqdm import tqdm
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
 model = swin_b(pretrained=True).to(device)
-
+model.eval()
 layer_names = get_layer_names(
     model, types=[torch.nn.Conv2d, torch.nn.Linear, torch.nn.AdaptiveAvgPool2d]
 )
@@ -33,21 +33,18 @@ def get_pre_last_layer_output(x):
 
 model.get_pre_last_layer_output = get_pre_last_layer_output
 
-imagenet_dataset = torchvision.datasets.ImageNet(
-    root="/mnt/homeGPU/isevillano/DatosJuanlu/imagenet",
-    split="val",
+imagenet_dataset = torchvision.datasets.ImageFolder(
+    "/mnt/homeGPU/jlsuarez/ECML-Arantxa/codes/nnguide/data/imagenet1k/imagenet/val/",
     transform=T.Compose(
         [
-            T.Resize(256),
-            T.CenterCrop(224),
+            T.Resize((224, 224)),
             T.ToTensor(),
-            T.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     ),
 )
+    #root="/mnt/homeGPU/jlsuarez/ECML-Arantxa/codes/nnguide/data/imagenet1k/imagenet/",
+    
 segmentation_mask = torch.zeros((224,224), dtype=torch.int64)
 n_parts = 10
 for i in range(n_parts):
@@ -58,19 +55,7 @@ for i in range(n_parts):
             i * i_step : (i + 1) * i_step, j * j_step : (j + 1) * j_step
         ] = (i * n_parts + j)
 
-
-def forward_feats(input):
-    """
-    Forward pass through the model to get the features.
-    """
-    with torch.no_grad():
-        feats = model.get_pre_last_layer_output(input)
-
-    feats = feats.view(feats.size(0), -1)  # Remove spatial dimensions
-    feats = feats.cpu().detach().numpy()
-    # Sum the features across the batch dimension
-    return feats[:, feat_to_explain]
-    # return np.sum(feats, axis=0)
+segmentation_mask = segmentation_mask.to(device)
 
 sigma = n_parts * n_parts / 2
 def perturb_func(input, **kwargs):
@@ -129,19 +114,6 @@ def from_interp_rep_transform(curr_sample, original_input, **kwargs):
         plt.show()
     return transformed_input
 
-
-for_biased_class = 231
-detected_biased_features = [471, 943]
-
-pre_state_dict = model.state_dict()
-for feat in detected_biased_features:
-    pre_state_dict["head.weight"][for_biased_class, feat] = 0
-model.load_state_dict(pre_state_dict)
-
-# Test the model on imagenet dataset
-
-model.eval()
-
 imagenet_loader = torch.utils.data.DataLoader(
     imagenet_dataset,
     batch_size=16,
@@ -149,10 +121,17 @@ imagenet_loader = torch.utils.data.DataLoader(
     num_workers=4,
     pin_memory=True,
 )
+for_biased_class = 231
+detected_biased_features = [943]
+
+
+
 mean_acc = 0.0
 total_samples = 0
-imagenet_loader = tqdm(imagenet_loader, desc="Evaluating model on ImageNet")
-imagenet_loader.set_description("Evaluating model on ImageNet")
+mean_acc_class_biased = 0.0
+total_samples_class_biased = 0
+imagenet_loader = tqdm(imagenet_loader, desc="Evaluating model before on ImageNet")
+imagenet_loader.set_description("Evaluating model before feat unbias on ImageNet")
 for batch in imagenet_loader:
     inputs, targets = batch
     inputs = inputs.to(device)
@@ -164,8 +143,60 @@ for batch in imagenet_loader:
     correct = (preds == targets).sum().item()
     mean_acc += correct
     total_samples += inputs.size(0)
-    imagenet_loader.set_postfix({"accuracy": f"{correct / inputs.size(0):.4f}"})
+    mean_acc_class_biased += (preds[targets == for_biased_class] == for_biased_class).sum().item()
+    total_samples_class_biased += (
+        targets == for_biased_class
+    ).sum().item()
+    
+    
+    imagenet_loader.set_postfix({"accuracy": f"{mean_acc / total_samples:.4f}","accuracy_class_biased": f"{1.0 if total_samples_class_biased == 0 else mean_acc_class_biased / total_samples_class_biased:.4f}"})
 mean_acc /= total_samples
-print(f"Mean accuracy on ImageNet: {mean_acc:.4f}")
+mean_acc_class_biased /= total_samples_class_biased
+print(f"Mean accuracy on before ImageNet: {mean_acc:.4f}")
+print(f"Mean accuracy on class {for_biased_class} before ImageNet: {mean_acc_class_biased:.4f}")
+
+
+
+
+
+pre_state_dict = model.state_dict()
+for feat in detected_biased_features:
+    pre_state_dict["head.weight"][for_biased_class, feat] = 0
+model.load_state_dict(pre_state_dict)
+
+imagenet_loader = torch.utils.data.DataLoader(
+    imagenet_dataset,
+    batch_size=16,
+    shuffle=False,
+    num_workers=4,
+    pin_memory=True,
+)
+mean_acc = 0.0
+total_samples = 0
+mean_acc_class_biased = 0.0
+total_samples_class_biased = 0
+imagenet_loader = tqdm(imagenet_loader, desc="Evaluating model on ImageNet")
+imagenet_loader.set_description("Evaluating model after feat unbias on ImageNet")
+for batch in imagenet_loader:
+    inputs, targets = batch
+    inputs = inputs.to(device)
+    targets = targets.to(device)
+
+    outputs = model(inputs)
+    
+    _, preds = torch.max(outputs, 1)
+    correct = (preds == targets).sum().item()
+    mean_acc += correct
+    total_samples += inputs.size(0)
+    mean_acc_class_biased += (preds[targets == for_biased_class] == for_biased_class).sum().item()
+    total_samples_class_biased += (
+        targets == for_biased_class
+    ).sum().item()
     
     
+    imagenet_loader.set_postfix({"accuracy": f"{mean_acc / total_samples:.4f}","accuracy_class_biased": f"{1.0 if total_samples_class_biased == 0 else mean_acc_class_biased / total_samples_class_biased:.4f}"})
+mean_acc /= total_samples
+mean_acc_class_biased /= total_samples_class_biased
+print(f"Mean accuracy on after ImageNet: {mean_acc:.4f}")
+print(f"Mean accuracy on class {for_biased_class} after ImageNet: {mean_acc_class_biased:.4f}")
+
