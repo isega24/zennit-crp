@@ -122,7 +122,7 @@ imagenet_loader = torch.utils.data.DataLoader(
     pin_memory=True,
 )
 for_biased_class = 231
-detected_biased_features = [943]
+detected_biased_features = [943,233]
 
 
 
